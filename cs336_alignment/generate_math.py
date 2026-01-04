@@ -11,7 +11,7 @@ splits = {'train': 'data/train-00000-of-00001.parquet', 'test': 'data/test-00000
 df = pd.read_parquet("hf://datasets/nlile/hendrycks-MATH-benchmark/" + splits["train"]).iloc[:200]
 
 prompt = read_text(prompts, "r1_zero.prompt")
-batch_size = 25
+batch_size = 100
 
 # Create a sampling params object, stopping generation on newline.
 sampling_params = SamplingParams(
@@ -27,8 +27,8 @@ llm = LLM(
 outputs = []
 
 for _, g in df.groupby(np.arange(len(df)) // batch_size):
-    problems_batch = df['problem'].to_list()
-    problem_ids_batch = df['unique_id'].to_list()
+    problems_batch = g['problem'].to_list()
+    problem_ids_batch = g['unique_id'].to_list()
 
     input_text = [
         prompt.format(question=problem)

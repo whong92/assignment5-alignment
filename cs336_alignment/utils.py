@@ -2,6 +2,8 @@ from pydantic import BaseModel
 import pandas as pd
 from typing import Callable
 from vllm import LLM, SamplingParams
+from transformers import PreTrainedTokenizer
+import torch
 
 class GenerationOutput(BaseModel):
     text_output: str
@@ -68,6 +70,7 @@ def generate_outputs_for_eval(
         generation_outputs.append(generation_output)
     return generation_outputs
 
+
 def generate_eval_results(
     eval_inputs: list[EvalInput],
     generated_outputs: list[GenerationOutput],
@@ -86,6 +89,7 @@ def generate_eval_results(
         eval_results.append(eval_result)
     return eval_results
 
+
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], dict[str, float]],
@@ -99,3 +103,34 @@ def evaluate_vllm(
         eval_inputs, generated_outputs, reward_fn
     )
     return eval_results
+
+
+def tokenize_prompt_and_output(
+    prompt_strs: list[str],
+    output_strs: list[str],
+    tokenizer: PreTrainedTokenizer,
+):
+    tok_output = tokenizer(
+        [p + o for p, o in zip(prompt_strs, output_strs)],
+        padding=True,
+        return_attention_mask=True,
+        return_tensors='pt'
+    )
+    input_ids = tok_output.input_ids[:, :-1]
+    labels = tok_output.input_ids[:, 1:]
+    attn_mask = tok_output.attention_mask[:, 1:]
+    response_masks = []
+    max_len_tokens = attn_mask.shape[1]
+    for p, o, a in zip(prompt_strs, output_strs, attn_mask):
+        response_mask = torch.ones(size=(max_len_tokens - 1, ), dtype=torch.int)
+        response_mask =  a * response_mask
+        len_of_prompt_in_label = (len(p) - 1)
+        response_mask[:len_of_prompt_in_label] = 0
+        response_masks.append(response_mask)
+    response_masks = torch.stack(response_masks, dim=0)
+
+    return {
+        'input_ids': input_ids,
+        'labels': labels,
+        'response_mask': response_masks
+    }

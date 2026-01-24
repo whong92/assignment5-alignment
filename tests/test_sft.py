@@ -9,6 +9,12 @@ from .adapters import (
 )
 
 def test_tokenize_prompt_and_output(numpy_snapshot, prompt_strs, output_strs, tokenizer):
+    print(numpy_snapshot)
+
+    print(type(tokenizer))
+
+    from cs336_alignment.utils import tokenize_prompt_and_output
+
     output = tokenize_prompt_and_output(
         prompt_strs=prompt_strs,
         output_strs=output_strs,

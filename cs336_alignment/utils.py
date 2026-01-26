@@ -2,8 +2,9 @@ from pydantic import BaseModel
 import pandas as pd
 from typing import Callable
 from vllm import LLM, SamplingParams
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizerBase
 import torch
+from torch.nn.functional import softmax
 
 class GenerationOutput(BaseModel):
     text_output: str
@@ -108,29 +109,35 @@ def evaluate_vllm(
 def tokenize_prompt_and_output(
     prompt_strs: list[str],
     output_strs: list[str],
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
 ):
-    tok_output = tokenizer(
-        [p + o for p, o in zip(prompt_strs, output_strs)],
-        padding=True,
-        return_attention_mask=True,
-        return_tensors='pt'
-    )
-    input_ids = tok_output.input_ids[:, :-1]
-    labels = tok_output.input_ids[:, 1:]
-    attn_mask = tok_output.attention_mask[:, 1:]
-    response_masks = []
-    max_len_tokens = attn_mask.shape[1]
-    for p, o, a in zip(prompt_strs, output_strs, attn_mask):
-        response_mask = torch.ones(size=(max_len_tokens - 1, ), dtype=torch.int)
-        response_mask =  a * response_mask
-        len_of_prompt_in_label = (len(p) - 1)
-        response_mask[:len_of_prompt_in_label] = 0
-        response_masks.append(response_mask)
-    response_masks = torch.stack(response_masks, dim=0)
+    pad_token = tokenizer.pad_token_id
+    prompt_tokens = tokenizer(prompt_strs, return_length=True)['input_ids']
+    output_tokens = tokenizer(output_strs, return_length=True)['input_ids']
 
+    max_len_tokens = max(map(len, prompt_tokens)) + max(map(len, output_tokens))
+    batch_size = len(prompt_strs)
+    attn_mask = torch.zeros(size=(batch_size, max_len_tokens), dtype=torch.bool)
+    input_ids = torch.ones(size=(batch_size, max_len_tokens), dtype=torch.int) * pad_token
+    response_labels = torch.zeros(size=(batch_size, max_len_tokens), dtype=torch.bool)
+
+    for b, (prompt, output) in enumerate(zip(prompt_tokens, output_tokens)):
+        prompt_len = len(prompt)
+        output_len = len(output)
+        tot_len = prompt_len + output_len
+        attn_mask[b, :tot_len] = True
+        response_labels[b, prompt_len:tot_len] = True
+        input_ids[b, :tot_len] = torch.as_tensor(prompt + output, dtype=torch.int)
+
+    # populate token and attention mask tensors
     return {
-        'input_ids': input_ids,
-        'labels': labels,
-        'response_mask': response_masks
+        'input_ids': input_ids[:, :max_len_tokens - 1],
+        'labels': input_ids[:, 1:],
+        'response_mask': response_labels[:, 1:]
     }
+
+
+def compute_entropy(logits: torch.Tensor):
+    p = softmax(logits, dim=-1)  # B, S, V
+    log_probs = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # B, S, V
+    return -torch.sum(torch.mul(p, log_probs), dim=-1)

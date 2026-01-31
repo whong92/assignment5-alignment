@@ -143,44 +143,12 @@ def compute_entropy(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return -torch.sum(torch.mul(p, log_probs), dim=-1), log_probs
 
 
-"""
-testing failure traceback:
-tests/conftest.py:186: in patched_assert_match
-    return original_assert_match(actual, test_name=test_name, force_update=force_update, rtol=rtol, atol=atol)
-tests/conftest.py:78: in assert_match
-    np.testing.assert_allclose(
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-args = (<function assert_allclose.<locals>.compare at 0x7c78d8301760>, array([[ -8.717442 , -26.838873 , -11.216859 , -10.162....331526 ,  -5.422127 ,
-         -3.8741682, -14.296633 ,  -4.1864767,  -5.2450867,  -3.860806 ]],
-      dtype=float32))
-kwds = {'equal_nan': True, 'err_msg': "Array 'log_probs' does not match snapshot for test_get_response_log_probs", 'header': 'Not equal to tolerance rtol=0.0001, atol=0.01', 'verbose': True}
-
-    @wraps(func)
-    def inner(*args, **kwds):
-        with self._recreate_cm():
->           return func(*args, **kwds)
-E           AssertionError: 
-E           Not equal to tolerance rtol=0.0001, atol=0.01
-E           Array 'log_probs' does not match snapshot for test_get_response_log_probs
-E           Mismatched elements: 20 / 20 (100%)
-E           Max absolute difference: 8.044474
-E           Max relative difference: 0.5555672
-E            x: array([[ -8.717442, -26.838873, -11.216859, -10.162708,  -5.59337 ,
-E                    -4.610565,  -4.789907,  -5.894167,  -4.340425, -12.82034 ],
-E                  [ -9.254216, -11.979642,  -6.481563,  -7.758141,  -4.821192,...
-E            y: array([[ -8.558651, -18.7944  ,  -7.210784,  -8.594861,  -5.381354,
-E                    -6.088948,  -5.0588  ,  -6.03125 ,  -4.969067, -14.833704],
-E                  [ -6.905063, -10.770768,  -6.596695,  -5.331526,  -5.422127,...
-"""
-
 def get_response_log_probs(
-    model: torch.nn.Module,
+    model: PreTrainedModel,
     input_ids: torch.Tensor, # B, S
     labels: torch.Tensor,  # B, S
     return_token_entropy: bool = False,
 ) -> dict[str, torch.Tensor]:
-    # TODO: re-test on larger hardware
     logits = model(input_ids).logits
     ent, log_probs = compute_entropy(logits)
     labels = labels.unsqueeze(-1)

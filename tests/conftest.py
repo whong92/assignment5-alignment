@@ -210,7 +210,7 @@ def output_strs():
 
 @pytest.fixture
 def model_id():
-    return "Qwen/Qwen2.5-Math-7B"
+    return "Qwen/Qwen2.5-Math-1.5B"
 
 
 @pytest.fixture

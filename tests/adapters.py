@@ -219,7 +219,6 @@ def run_sft_microbatch_train_step(
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute the policy gradient loss and backprop its gradients for a microbatch.
     """
-    print(policy_log_probs.shape)
     return sft_microbatch_train_step(
         policy_log_probs,
         response_mask,

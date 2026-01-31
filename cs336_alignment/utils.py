@@ -2,7 +2,7 @@ from pydantic import BaseModel
 import pandas as pd
 from typing import Callable
 from vllm import LLM, SamplingParams
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, PreTrainedModel
 import torch
 from torch.nn.functional import softmax
 
@@ -137,7 +137,50 @@ def tokenize_prompt_and_output(
     }
 
 
-def compute_entropy(logits: torch.Tensor):
+def compute_entropy(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     p = softmax(logits, dim=-1)  # B, S, V
     log_probs = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # B, S, V
-    return -torch.sum(torch.mul(p, log_probs), dim=-1)
+    return -torch.sum(torch.mul(p, log_probs), dim=-1), log_probs
+
+
+def get_response_log_probs(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor, # B, S
+    labels: torch.Tensor,  # B, S
+    return_token_entropy: bool = False,
+) -> dict[str, torch.Tensor]:
+    # TODO: re-test on larger hardware
+    logits = model(input_ids).logits
+    ent, log_probs = compute_entropy(logits)
+    labels = labels.unsqueeze(-1)
+    labels_log_prob = torch.gather(log_probs, dim=-1, index=labels)[:, :, 0]
+    ret = {
+        "log_probs": labels_log_prob,
+    }
+    if return_token_entropy:
+        ret["token_entropy"] = ent
+    return ret
+
+
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+    normalize_constant: float = 1.0,
+) -> torch.Tensor:
+    masked_tensor = tensor * mask
+    return torch.sum(masked_tensor, dim=dim) / normalize_constant
+
+
+def sft_microbatch_train_step(
+    policy_log_probs: torch.Tensor,  # B, S
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    normalize_constant: int | None = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    masked_policy_log_probs = masked_normalize(
+        tensor=policy_log_probs, mask=response_mask, normalize_constant=normalize_constant, dim=1
+    )
+    loss = -torch.mean(masked_policy_log_probs) / gradient_accumulation_steps
+    loss.backward()
+    return loss, {}

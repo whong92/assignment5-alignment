@@ -9,6 +9,9 @@ from importlib.resources import read_text
 from cs336_alignment import prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 
+R1_ZERO_PROMPT_TEMPLATE = read_text(prompts, "r1_zero.prompt")
+R1_ZERO_OUTPUT_PROMPT_TEMPLATE = read_text(prompts, "r1_zero_output.prompt")
+
 class GenerationOutput(BaseModel):
     text_output: str
     unique_id: str
@@ -51,6 +54,35 @@ def get_math_benchmark_eval_inputs(
         eval_inputs.append(eval_input)
     return eval_inputs
 
+
+def format_math_benchmark_train_sample(
+    input_prompt: str,
+    output_prompt: str,
+    question: str,
+    reasoning: str,
+    answer: str
+) -> dict[str, str]:
+    return {
+        "input": input_prompt.format(question=question),
+        "output": output_prompt.format(reasoning=reasoning, answer=answer),
+    }
+
+
+def get_math_benchmark_train_dataset(
+    split: str
+) -> list[dict]:
+    df = get_math_benchmark_df(split)
+    dataset = []
+    for r in df.itertuples():
+        train_sample = format_math_benchmark_train_sample(
+            R1_ZERO_PROMPT_TEMPLATE,
+            R1_ZERO_OUTPUT_PROMPT_TEMPLATE,
+            question=r.problem,
+            reasoning=r.solution,
+            answer=r.answer,
+        )
+        dataset.append(train_sample)
+    return dataset
 
 def generate_outputs_for_eval(
     vllm_model: LLM,
@@ -192,9 +224,8 @@ def log_generations(
     llm: LLM,
     output_path: str
 ) -> None:
-    prompt_template = read_text(prompts, "r1_zero.prompt")
     eval_inputs = get_math_benchmark_eval_inputs(
-        prompt_template=prompt_template,
+        prompt_template=R1_ZERO_PROMPT_TEMPLATE,
         split="test",
     )
     # Create a sampling params object, stopping generation on newline.

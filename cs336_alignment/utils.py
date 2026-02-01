@@ -4,7 +4,10 @@ from typing import Callable
 from vllm import LLM, SamplingParams
 from transformers import PreTrainedTokenizerBase, PreTrainedModel
 import torch
-from torch.nn.functional import softmax
+
+from importlib.resources import read_text
+from cs336_alignment import prompts
+from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 
 class GenerationOutput(BaseModel):
     text_output: str
@@ -138,8 +141,8 @@ def tokenize_prompt_and_output(
 
 
 def compute_entropy(logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    p = softmax(logits, dim=-1)  # B, S, V
     log_probs = logits - torch.logsumexp(logits, dim=-1, keepdim=True)  # B, S, V
+    p = torch.exp(log_probs)
     return -torch.sum(torch.mul(p, log_probs), dim=-1), log_probs
 
 
@@ -183,3 +186,35 @@ def sft_microbatch_train_step(
     loss = -torch.mean(masked_policy_log_probs) / gradient_accumulation_steps
     loss.backward()
     return loss, {}
+
+
+def log_generations(
+    llm: LLM,
+    output_path: str
+) -> None:
+    prompt_template = read_text(prompts, "r1_zero.prompt")
+    eval_inputs = get_math_benchmark_eval_inputs(
+        prompt_template=prompt_template,
+        split="test",
+    )
+    # Create a sampling params object, stopping generation on newline.
+    sampling_params = SamplingParams(
+        temperature=1.0,
+        top_p=1.0,
+        max_tokens=1024,
+        stop=["</answer>"],
+        include_stop_str_in_output=True
+    )
+    generation_outputs = generate_outputs_for_eval(
+        vllm_model=llm,
+        eval_inputs=eval_inputs,
+        eval_sampling_params=sampling_params,
+    )
+    eval_results = generate_eval_results(
+        eval_inputs=eval_inputs,
+        generated_outputs=generation_outputs,
+        reward_fn=r1_zero_reward_fn,
+    )
+    with open(output_path, "w") as fp:
+        for eval_result in eval_results:
+            fp.write(f"{eval_result.model_dump_json()}\n")

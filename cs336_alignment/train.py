@@ -144,6 +144,8 @@ def sft_loop(
         num_samples_seen = 0
         for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
             step_count = e * len(dataloader) + idx
+            # TODO: find out length distribution of sequences
+            # TODO set max length here
             input_ids = data['input_ids'].to(experiment_config.device_model)
             labels = data['labels'].to(experiment_config.device_model)
             response_mask = data['response_mask'].to(experiment_config.device_model)

@@ -13,10 +13,12 @@ from cs336_alignment.utils import (
     load_policy_into_vllm_instance,
     EvalResult
 )
-from drgrpo_grader import r1_zero_reward_fn
-from pydantic import BaseModel
+from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from pydantic import BaseModel, computed_field
 from vllm import LLM, SamplingParams
-import pd
+import pandas as pd
+import os
+import yaml
 
 import wandb
 
@@ -27,16 +29,37 @@ class SFTConfig(BaseModel):
     gradient_accumulation_steps: int
     seed: int
     epochs: int
-    eval_sampling_params: SamplingParams
+
 
 class ExperimentRunConfig(BaseModel):
     sft_config: SFTConfig
-    dataset_path: str
-    output_dir: str
+    dataset_path_rel: str
+    output_dir_rel: str
+    device_model: str
+    device_vllm: str
+    base_path: str
 
-device = "cpu"
+    @computed_field
+    @property
+    def dataset_path(self) -> str:
+        return os.path.join(self.base_path, self.dataset_path_rel)
+
+    @computed_field
+    @property
+    def output_dir(self) -> str:
+        return os.path.join(self.base_path, self.output_dir_rel)
+
+
 MODEL_NAME = "Qwen/Qwen2.5-Math-1.5B"
 WANDB_PROJECT = "cs336-assignment-5"
+SAMPLING_PARAMS = SamplingParams(
+    temperature=1.0, 
+    top_p=1.0, 
+    max_tokens=1024, 
+    stop=["</answer>"], 
+    include_stop_str_in_output=True
+)
+
 
 def eval_model(
     model: PreTrainedModel,
@@ -58,7 +81,11 @@ def eval_model(
 def sft_loop(
     experiment_config: ExperimentRunConfig
 ):
+    print("Initializing.")
     sft_config = experiment_config.sft_config
+    if not os.path.exists(experiment_config.output_dir):
+        os.makedirs(experiment_config.output_dir, exist_ok=True)
+
     # Start a new wandb run to track this script.
     run = wandb.init(
         # Set the wandb entity where your project will be logged (generally your team name).
@@ -73,13 +100,13 @@ def sft_loop(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
-    ).to(device)
+    ).to(experiment_config.device_model)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     vllm_instance = init_vllm(
         MODEL_NAME,
-        device=device,
+        device=experiment_config.device_vllm,
         seed=sft_config.seed,
     )
 
@@ -99,13 +126,14 @@ def sft_loop(
         betas=(0.9, 0.95),
     )
 
+    print("Start Training Loop.")
     for e in range(sft_config.epochs):
         num_samples_seen = 0
         for idx, data in enumerate(dataloader):
             step_count = e * len(dataloader) + idx
-            input_ids = data['input_ids'].to(device)
-            labels = data['labels'].to(device)
-            response_mask = data['response_mask'].to(device)
+            input_ids = data['input_ids'].to(experiment_config.device_model)
+            labels = data['labels'].to(experiment_config.device_model)
+            response_mask = data['response_mask'].to(experiment_config.device_model)
             # Forward pass.
             ret = get_response_log_probs(
                 model,
@@ -128,9 +156,11 @@ def sft_loop(
                 # Zero gradients every `gradient_accumulation_steps` batches.
                 optimizer.zero_grad()
 
+        print("Evaluating.")
         eval_results = eval_model(
             model=model,
             vllm_instance=vllm_instance,
+            eval_sampling_params=SAMPLING_PARAMS,
         )
 
         rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
@@ -138,17 +168,30 @@ def sft_loop(
         for reward_name in rewards.index:
             run.log({reward_name: rewards[reward_name]}, step=step_count)
 
-        with tempfile.NamedTemporaryFile() as fp:
+        # save eval results
+        eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")
+        with open(eval_results_output_path, "w") as fp:
             for gen_output in eval_results:
                 fp.write(f"{gen_output.model_dump_json()}\n")
-            artifact = wandb.Artifact(name="eval_results", type="eval_results")
-            artifact.add_file(local_path=fp.name, name=f"{run.name}-epoch-{e:03d}")
-            run.log_artifact(artifact)
+        artifact = wandb.Artifact(name="eval_results", type="eval_results")
+        artifact.add_file(local_path=eval_results_output_path, name=f"{run.name}-epoch-{e:03d}")
+        run.log_artifact(artifact)
 
-        with tempfile.TemporaryDirectory() as temp_dir_name:
-            model.save_pretrained(temp_dir_name)
-            artifact = wandb.Artifact(name="model", type="model")
-            artifact.add_dir(local_path=temp_dir_name, name=f"{run.name}-epoch-{e:03d}")
-            run.log_artifact(artifact)
+        # save model
+        model_output_dir = os.path.join(experiment_config.output_dir, f"model")
+        os.makedirs(model_output_dir, exist_ok=True)
+        model.save_pretrained(model_output_dir)
+        artifact = wandb.Artifact(name="model", type="model")
+        artifact.add_dir(local_path=model_output_dir, name=f"{run.name}-epoch-{e:03d}")
+        run.log_artifact(artifact)
 
 
+def main():
+    with open("/workspace/assignment5-alignment/cs336_alignment/basic_config.yaml", "r") as fp:
+        config_dict = yaml.safe_load(fp)
+    experiment_config = ExperimentRunConfig.model_validate(config_dict)
+    sft_loop(experiment_config)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,11 @@
+sft_config:
+  lr: 2e-5
+  batch_size: 16
+  gradient_accumulation_steps: 4
+  seed: 42
+  epochs: 2
+base_path: "/workspace"
+dataset_path_rel: "assignment5-alignment/cs336_alignment/sft-train.jsonl"
+output_dir_rel: "output/"
+device_model: "cuda:0"
+device_vllm: "cuda:1"

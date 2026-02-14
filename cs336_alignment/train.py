@@ -5,6 +5,8 @@ os.environ["WANDB_API_KEY"] = "wandb_v1_BdLm0gcIW2z3VDJFxGCZsUuvuDT_ZWDOx9xAWmxP
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 import torch
 from torch.utils.data import DataLoader
+from importlib.resources import read_text
+from cs336_alignment import prompts
 from cs336_alignment.utils import (
     MathSFTDataset,
     make_math_sft_collate_fn,
@@ -13,15 +15,19 @@ from cs336_alignment.utils import (
     init_vllm,
     evaluate_vllm,
     load_policy_into_vllm_instance,
-    EvalResult
+    EvalResult,
+    get_math_benchmark_eval_inputs
 )
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from pydantic import BaseModel, computed_field
 from vllm import LLM, SamplingParams
 import pandas as pd
 import yaml
+from tqdm import tqdm
 
 import wandb
+
+prompt_template = read_text(prompts, "r1_zero.prompt")
 
 
 class SFTConfig(BaseModel):
@@ -67,6 +73,11 @@ def eval_model(
     vllm_instance: LLM,
     eval_sampling_params: SamplingParams,
 ) -> list[EvalResult]:
+    eval_inputs = get_math_benchmark_eval_inputs(
+        prompt_template=prompt_template,
+        split="test",
+    )
+
     load_policy_into_vllm_instance(
         model,
         vllm_instance
@@ -74,7 +85,7 @@ def eval_model(
     return evaluate_vllm(
         vllm_model=vllm_instance,
         reward_fn=r1_zero_reward_fn,
-        eval_inputs=[],
+        eval_inputs=eval_inputs,
         eval_sampling_params=eval_sampling_params
     )
 
@@ -83,6 +94,7 @@ def sft_loop(
     experiment_config: ExperimentRunConfig
 ):
     print("Initializing.")
+    
     sft_config = experiment_config.sft_config
     if not os.path.exists(experiment_config.output_dir):
         os.makedirs(experiment_config.output_dir, exist_ok=True)
@@ -111,7 +123,7 @@ def sft_loop(
         seed=sft_config.seed,
     )
 
-    dataset = MathSFTDataset(path=sft_config.dataset_path)
+    dataset = MathSFTDataset(path=experiment_config.dataset_path)
 
     dataloader = DataLoader(
         dataset=dataset,
@@ -130,7 +142,7 @@ def sft_loop(
     print("Start Training Loop.")
     for e in range(sft_config.epochs):
         num_samples_seen = 0
-        for idx, data in enumerate(dataloader):
+        for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
             step_count = e * len(dataloader) + idx
             input_ids = data['input_ids'].to(experiment_config.device_model)
             labels = data['labels'].to(experiment_config.device_model)
@@ -167,7 +179,7 @@ def sft_loop(
         rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
         rewards = rewards.aggregate(['mean'])
         for reward_name in rewards.index:
-            run.log({reward_name: rewards[reward_name]}, step=step_count)
+            run.log({reward_name: rewards.loc[reward_name].item()}, step=step_count)
 
         # save eval results
         eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")

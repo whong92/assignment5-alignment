@@ -32,4 +32,4 @@ with open(f"{curfile.parent.parent.resolve().as_posix()}/eval_results.jsonl", "w
 rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
 rewards = rewards.aggregate('mean')
 print(rewards.index)
-print(rewards.loc['format_reward'])
+print(rewards.loc['format_reward'].item())

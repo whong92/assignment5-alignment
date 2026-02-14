@@ -264,7 +264,7 @@ class MathSFTDataset(Dataset):
         with open(path, "r") as fp:
             for line in fp.readlines():
                  self.data.append(json.loads(line))
-        self.data = self.data[:32]
+        self.data = self.data[:1024]
 
     def __len__(self):
         return len(self.data)

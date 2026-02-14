@@ -1,7 +1,7 @@
 sft_config:
   lr: 2e-5
-  batch_size: 16
-  gradient_accumulation_steps: 4
+  batch_size: 4
+  gradient_accumulation_steps: 8
   seed: 42
   epochs: 2
 base_path: "/workspace"

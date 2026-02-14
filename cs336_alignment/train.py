@@ -1,4 +1,6 @@
-import tempfile
+import os
+
+os.environ["WANDB_API_KEY"] = "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"
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 import torch
@@ -17,7 +19,6 @@ from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from pydantic import BaseModel, computed_field
 from vllm import LLM, SamplingParams
 import pandas as pd
-import os
 import yaml
 
 import wandb

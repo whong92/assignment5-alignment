@@ -4,10 +4,17 @@ from typing import Callable
 from vllm import LLM, SamplingParams
 from transformers import PreTrainedTokenizerBase, PreTrainedModel
 import torch
+from torch.utils.data import Dataset
+import json
+from functools import partial
+from vllm.model_executor import set_random_seed as vllm_set_random_seed
+from unittest.mock import patch
+
 
 from importlib.resources import read_text
 from cs336_alignment import prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+
 
 R1_ZERO_PROMPT_TEMPLATE = read_text(prompts, "r1_zero.prompt")
 R1_ZERO_OUTPUT_PROMPT_TEMPLATE = read_text(prompts, "r1_zero_output.prompt")
@@ -30,7 +37,7 @@ def get_math_benchmark_df(
     split: str,
 ) -> pd.DataFrame:
     splits = {
-        'train': 'data/train-00000-of-00001.parquet', 
+        'train': 'data/train-00000-of-00001.parquet',
         'test': 'data/test-00000-of-00001.parquet'
     }
     df = pd.read_parquet(
@@ -153,7 +160,7 @@ def tokenize_prompt_and_output(
     max_len_tokens = max(map(len, prompt_tokens)) + max(map(len, output_tokens))
     batch_size = len(prompt_strs)
     attn_mask = torch.zeros(size=(batch_size, max_len_tokens), dtype=torch.bool)
-    input_ids = torch.ones(size=(batch_size, max_len_tokens), dtype=torch.int) * pad_token
+    input_ids = torch.ones(size=(batch_size, max_len_tokens), dtype=torch.int64) * pad_token
     response_labels = torch.zeros(size=(batch_size, max_len_tokens), dtype=torch.bool)
 
     for b, (prompt, output) in enumerate(zip(prompt_tokens, output_tokens)):
@@ -162,7 +169,7 @@ def tokenize_prompt_and_output(
         tot_len = prompt_len + output_len
         attn_mask[b, :tot_len] = True
         response_labels[b, prompt_len:tot_len] = True
-        input_ids[b, :tot_len] = torch.as_tensor(prompt + output, dtype=torch.int)
+        input_ids[b, :tot_len] = torch.as_tensor(prompt + output, dtype=torch.int64)
 
     # populate token and attention mask tensors
     return {
@@ -249,3 +256,69 @@ def log_generations(
     with open(output_path, "w") as fp:
         for eval_result in eval_results:
             fp.write(f"{eval_result.model_dump_json()}\n")
+
+
+class MathSFTDataset(Dataset):
+    def __init__(self, path: str):
+        self.data: list[dict[str, str]] = []
+        with open(path, "r") as fp:
+            for line in fp.readlines():
+                 self.data.append(json.loads(line))
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int):
+        return self.data[idx]
+
+
+def math_sft_collate_fn(
+    batch: list[dict[str, str]],
+    tokenizer: PreTrainedTokenizerBase
+) -> dict[str, torch.Tensor]:
+    return tokenize_prompt_and_output(
+        prompt_strs = [b["input"] for b in batch],
+        output_strs=[b["output"] for b in batch],
+        tokenizer=tokenizer
+    )
+
+def make_math_sft_collate_fn(
+    tokenizer: PreTrainedTokenizerBase
+) -> Callable[[list[dict[str, str]]], dict[str, torch.Tensor]]:
+    return partial(math_sft_collate_fn, tokenizer=tokenizer)
+
+
+def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85) -> LLM:
+    """
+    Start the inference process, here we use vLLM to hold a model on
+    a GPU separate from the policy.
+    """
+    vllm_set_random_seed(seed)
+    # Monkeypatch from TRL:
+    # https://github.com/huggingface/trl/blob/
+    # 22759c820867c8659d00082ba8cf004e963873c1/trl/trainer/grpo_trainer.py
+    # Patch vLLM to make sure we can
+    # (1) place the vLLM model on the desired device (world_size_patch) and
+    # (2) avoid a test that is not designed for our setting (profiling_patch).
+    world_size_patch = patch("torch.distributed.get_world_size", return_value=1)
+    profiling_patch = patch(
+        "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling",
+        return_value=None
+    )
+    with world_size_patch, profiling_patch:
+        return LLM(
+            model=model_id,
+            device=device,
+            dtype=torch.bfloat16,
+            enable_prefix_caching=True,
+            gpu_memory_utilization=gpu_memory_utilization,
+        )
+    
+def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
+    """
+    Copied from https://github.com/huggingface/trl/blob/
+    22759c820867c8659d00082ba8cf004e963873c1/trl/trainer/grpo_trainer.py#L670.
+    """
+    state_dict = policy.state_dict()
+    llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    llm_model.load_weights(state_dict.items())

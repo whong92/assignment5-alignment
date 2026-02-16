@@ -16,6 +16,8 @@ from cs336_alignment import prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 
 
+import random
+
 R1_ZERO_PROMPT_TEMPLATE = read_text(prompts, "r1_zero.prompt")
 R1_ZERO_OUTPUT_PROMPT_TEMPLATE = read_text(prompts, "r1_zero_output.prompt")
 
@@ -152,24 +154,37 @@ def tokenize_prompt_and_output(
     prompt_strs: list[str],
     output_strs: list[str],
     tokenizer: PreTrainedTokenizerBase,
+    max_seq_token_len: int | None = None,
 ):
     pad_token = tokenizer.pad_token_id
     prompt_tokens = tokenizer(prompt_strs, return_length=True)['input_ids']
     output_tokens = tokenizer(output_strs, return_length=True)['input_ids']
 
     max_len_tokens = max(map(len, prompt_tokens)) + max(map(len, output_tokens))
+    if max_seq_token_len is not None:
+        max_len_tokens = min(max_len_tokens, max_seq_token_len)
     batch_size = len(prompt_strs)
-    attn_mask = torch.zeros(size=(batch_size, max_len_tokens), dtype=torch.bool)
     input_ids = torch.ones(size=(batch_size, max_len_tokens), dtype=torch.int64) * pad_token
     response_labels = torch.zeros(size=(batch_size, max_len_tokens), dtype=torch.bool)
 
     for b, (prompt, output) in enumerate(zip(prompt_tokens, output_tokens)):
+
         prompt_len = len(prompt)
         output_len = len(output)
         tot_len = prompt_len + output_len
-        attn_mask[b, :tot_len] = True
-        response_labels[b, prompt_len:tot_len] = True
-        input_ids[b, :tot_len] = torch.as_tensor(prompt + output, dtype=torch.int64)
+        _response_labels_b = torch.zeros(size=(tot_len,), dtype=torch.bool)
+        _response_labels_b[prompt_len:tot_len] = True
+        _tokens_b = torch.as_tensor(prompt + output, dtype=torch.int64)
+
+        if tot_len > max_len_tokens:
+            random_offset = random.randint(0, max(0, tot_len - max_len_tokens))
+            len_to_take = min(tot_len, max_len_tokens)
+        else:
+            random_offset = 0
+            len_to_take = max_len_tokens
+
+        response_labels[b] = _response_labels_b[random_offset:(random_offset + len_to_take)]
+        input_ids[b] = _tokens_b[random_offset:(random_offset + len_to_take)]
 
     # populate token and attention mask tensors
     return {
@@ -263,8 +278,8 @@ class MathSFTDataset(Dataset):
         self.data: list[dict[str, str]] = []
         with open(path, "r") as fp:
             for line in fp.readlines():
-                 self.data.append(json.loads(line))
-        self.data = self.data[:1024]
+                self.data.append(json.loads(line))
+        self.data = self.data
 
     def __len__(self):
         return len(self.data)
@@ -323,3 +338,32 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     state_dict = policy.state_dict()
     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())
+
+
+def debug_dataloader():
+    from transformers import AutoTokenizer
+    from torch.utils.data import DataLoader
+    import numpy as np
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-1.5B")
+    dataset_path = "/home/wong/personal/assignment5-alignment/cs336_alignment/sft-train.jsonl"
+    dataset = MathSFTDataset(path=dataset_path)
+
+    dataloader = DataLoader(
+        dataset=dataset,
+        batch_size=1,
+        shuffle=True,
+        collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer),
+    )
+
+    lens = []
+    response_lens = []
+    for batch in dataloader:
+        lens.append(len(batch["input_ids"][0]))
+        response_lens.append(torch.sum(batch["response_mask"][0]).item())
+
+
+    print("total lens percentiles: ", np.percentile(lens, [25, 50, 75, 90, 95, 100], axis=0))
+    print("response lens percentiles: ", np.percentile(response_lens, [25, 50, 75, 90, 95, 100], axis=0))
+
+if __name__ == "__main__":
+    debug_dataloader()

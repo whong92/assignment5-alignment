@@ -9,3 +9,4 @@ dataset_path_rel: "assignment5-alignment/cs336_alignment/sft-train.jsonl"
 output_dir_rel: "output/"
 device_model: "cuda:0"
 device_vllm: "cuda:1"
+max_seq_tok_len: 1024

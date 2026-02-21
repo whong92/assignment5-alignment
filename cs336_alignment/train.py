@@ -45,6 +45,7 @@ class ExperimentRunConfig(BaseModel):
     device_model: str
     device_vllm: str
     base_path: str
+    max_seq_tok_len: int
 
     @computed_field
     @property
@@ -129,7 +130,7 @@ def sft_loop(
         dataset=dataset,
         batch_size=sft_config.batch_size,
         shuffle=True,
-        collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer),
+        collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer, max_seq_token_len=experiment_config.max_seq_tok_len),
     )
 
     optimizer = torch.optim.AdamW(
@@ -144,8 +145,6 @@ def sft_loop(
         num_samples_seen = 0
         for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
             step_count = e * len(dataloader) + idx
-            # TODO: find out length distribution of sequences
-            # TODO set max length here
             input_ids = data['input_ids'].to(experiment_config.device_model)
             labels = data['labels'].to(experiment_config.device_model)
             response_mask = data['response_mask'].to(experiment_config.device_model)

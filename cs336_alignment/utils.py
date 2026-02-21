@@ -177,8 +177,8 @@ def tokenize_prompt_and_output(
         _tokens_b = torch.as_tensor(prompt + output, dtype=torch.int64)
 
         if tot_len > max_len_tokens:
-            random_offset = random.randint(0, max(0, tot_len - max_len_tokens))
-            len_to_take = min(tot_len, max_len_tokens)
+            random_offset = random.randint(0, tot_len - max_len_tokens)
+            len_to_take = max_len_tokens
         else:
             random_offset = 0
             len_to_take = max_len_tokens
@@ -290,18 +290,21 @@ class MathSFTDataset(Dataset):
 
 def math_sft_collate_fn(
     batch: list[dict[str, str]],
-    tokenizer: PreTrainedTokenizerBase
+    tokenizer: PreTrainedTokenizerBase,
+    max_seq_token_len: int | None = None
 ) -> dict[str, torch.Tensor]:
     return tokenize_prompt_and_output(
         prompt_strs = [b["input"] for b in batch],
         output_strs=[b["output"] for b in batch],
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
+        max_seq_token_len=max_seq_token_len
     )
 
 def make_math_sft_collate_fn(
-    tokenizer: PreTrainedTokenizerBase
+    tokenizer: PreTrainedTokenizerBase,
+    max_seq_token_len: int | None = None
 ) -> Callable[[list[dict[str, str]]], dict[str, torch.Tensor]]:
-    return partial(math_sft_collate_fn, tokenizer=tokenizer)
+    return partial(math_sft_collate_fn, tokenizer=tokenizer, max_seq_token_len=max_seq_token_len)
 
 
 def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85) -> LLM:
@@ -352,14 +355,14 @@ def debug_dataloader():
         dataset=dataset,
         batch_size=1,
         shuffle=True,
-        collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer),
+        collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer, max_seq_token_len=1024),
     )
 
     lens = []
     response_lens = []
     for batch in dataloader:
         lens.append(len(batch["input_ids"][0]))
-        response_lens.append(torch.sum(batch["response_mask"][0]).item())
+        response_lens.append(torch.sum(batch["response_maysk"][0]).item())
 
 
     print("total lens percentiles: ", np.percentile(lens, [25, 50, 75, 90, 95, 100], axis=0))

@@ -181,10 +181,10 @@ def tokenize_prompt_and_output(
             len_to_take = max_len_tokens
         else:
             random_offset = 0
-            len_to_take = max_len_tokens
+            len_to_take = tot_len
 
-        response_labels[b] = _response_labels_b[random_offset:(random_offset + len_to_take)]
-        input_ids[b] = _tokens_b[random_offset:(random_offset + len_to_take)]
+        response_labels[b, :len_to_take] = _response_labels_b[random_offset:(random_offset + len_to_take)]
+        input_ids[b, :len_to_take] = _tokens_b[random_offset:(random_offset + len_to_take)]
 
     # populate token and attention mask tensors
     return {

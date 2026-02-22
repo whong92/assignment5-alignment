@@ -179,8 +179,8 @@ def sft_loop(
 
         rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
         rewards = rewards.aggregate(['mean'])
-        for reward_name in rewards.index:
-            run.log({reward_name: rewards.loc[reward_name].item()}, step=step_count)
+        for reward_name in rewards.columns:
+            run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=step_count)
 
         # save eval results
         eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")
@@ -191,7 +191,7 @@ def sft_loop(
         artifact.add_file(local_path=eval_results_output_path, name=f"{run.name}-epoch-{e:03d}")
         run.log_artifact(artifact)
 
-        # save model
+        # save mode[l
         model_output_dir = os.path.join(experiment_config.output_dir, f"model")
         os.makedirs(model_output_dir, exist_ok=True)
         model.save_pretrained(model_output_dir)
@@ -200,6 +200,8 @@ def sft_loop(
         run.log_artifact(artifact)
 
 
+# TODO: last run (dutiful-totem-16) produced bery bad generations  - need to debug (loss is decreasing but the generations are gibberish).
+# are we loading up the weights in to the vllm correctly?
 def main():
     with open("/workspace/assignment5-alignment/cs336_alignment/basic_config.yaml", "r") as fp:
         config_dict = yaml.safe_load(fp)

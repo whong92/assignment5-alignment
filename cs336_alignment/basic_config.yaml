@@ -3,7 +3,7 @@ sft_config:
   batch_size: 4
   gradient_accumulation_steps: 32
   seed: 42
-  epochs: 10
+  epochs: 25
 base_path: "/workspace"
 dataset_path_rel: "assignment5-alignment/cs336_alignment/sft-train.jsonl"
 output_dir_rel: "output/"

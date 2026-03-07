@@ -108,14 +108,7 @@ class AdamWClipped(AdamW):
 
     def step(self, closure=None):
         for group in self.param_groups:
-            print("LR: ", group['lr'])
-            for p in group['params']:
-                print("grad before: ", torch.mean(p.grad), torch.max(p.grad), torch.min(p.grad))
-                break
             torch.nn.utils.clip_grad_norm_(group['params'], self.max_grad_norm)
-            for p in group['params']:
-                print("grad after: ", torch.mean(p.grad), torch.max(p.grad), torch.min(p.grad))
-                break
         super().step(closure)
 
 

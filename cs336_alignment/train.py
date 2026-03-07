@@ -5,6 +5,10 @@ os.environ["WANDB_API_KEY"] = "wandb_v1_BdLm0gcIW2z3VDJFxGCZsUuvuDT_ZWDOx9xAWmxP
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 import torch
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim import AdamW
+from torch.optim.optimizer import ParamsT
+from torch import Tensor
 from importlib.resources import read_text
 from cs336_alignment import prompts
 from cs336_alignment.utils import (
@@ -69,6 +73,50 @@ SAMPLING_PARAMS = SamplingParams(
     stop=["</answer>"], 
     include_stop_str_in_output=True
 )
+
+class AdamWClipped(AdamW):
+    def __init__(
+        self,
+        params: ParamsT,
+        lr: float| Tensor = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 1e-2,
+        amsgrad: bool = False,
+        *,
+        maximize: bool = False,
+        foreach: bool | None = None,
+        capturable: bool = False,
+        differentiable: bool = False,
+        fused: bool | None = None,
+        max_grad_norm: float = 1.0,
+    ):
+        super().__init__(
+            params=params,
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            weight_decay=weight_decay,
+            amsgrad=amsgrad,
+            maximize=maximize,
+            foreach=foreach,
+            capturable=capturable,
+            differentiable=differentiable,
+            fused=fused,
+        )
+        self.max_grad_norm = max_grad_norm
+
+    def step(self, closure=None):
+        for group in self.param_groups:
+            print("LR: ", group['lr'])
+            for p in group['params']:
+                print("grad before: ", torch.mean(p.grad), torch.max(p.grad), torch.min(p.grad))
+                break
+            torch.nn.utils.clip_grad_norm_(group['params'], self.max_grad_norm)
+            for p in group['params']:
+                print("grad after: ", torch.mean(p.grad), torch.max(p.grad), torch.min(p.grad))
+                break
+        super().step(closure)
 
 
 def eval_model(
@@ -135,11 +183,26 @@ def sft_loop(
         collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer, max_seq_token_len=experiment_config.max_seq_tok_len),
     )
 
-    optimizer = torch.optim.AdamW(
+    # optimizer = torch.optim.AdamW(
+    #     model.parameters(),
+    #     lr=sft_config.lr,
+    #     weight_decay=0.0,
+    #     betas=(0.9, 0.95),
+    # )
+
+    optimizer = AdamWClipped(
         model.parameters(),
         lr=sft_config.lr,
         weight_decay=0.0,
         betas=(0.9, 0.95),
+        max_grad_norm=1.0,
+    )
+
+    num_steps = sft_config.epochs * len(dataloader) // sft_config.gradient_accumulation_steps
+    scheduler = CosineAnnealingLR(
+        optimizer, 
+        T_max=num_steps,
+        eta_min=sft_config.lr * 0.1,
     )
 
     print("Start Training Loop.")
@@ -194,6 +257,7 @@ def sft_loop(
                 optimizer.step()
                 # Zero gradients every `gradient_accumulation_steps` batches.
                 optimizer.zero_grad()
+                scheduler.step()
 
         # save mode[l
         model_output_dir = os.path.join(experiment_config.output_dir, f"model")

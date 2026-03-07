@@ -1,7 +1,8 @@
 from importlib.resources import read_text
 from cs336_alignment import prompts
 from vllm import LLM, SamplingParams
-from cs336_alignment.utils import get_math_benchmark_eval_inputs, generate_outputs_for_eval
+from cs336_alignment.utils import get_math_benchmark_eval_inputs
+from cs336_alignment.eval_vllm import generate_outputs_for_eval
 
 prompt_template = read_text(prompts, "r1_zero.prompt")
 

@@ -12,11 +12,13 @@ from cs336_alignment.utils import (
     make_math_sft_collate_fn,
     get_response_log_probs,
     sft_microbatch_train_step,
+    EvalResult,
+    get_math_benchmark_eval_inputs
+)
+from cs336_alignment.eval_vllm import (
     init_vllm,
     evaluate_vllm,
     load_policy_into_vllm_instance,
-    EvalResult,
-    get_math_benchmark_eval_inputs
 )
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from pydantic import BaseModel, computed_field
@@ -141,8 +143,31 @@ def sft_loop(
     )
 
     print("Start Training Loop.")
+    step_count = 0
     for e in range(sft_config.epochs):
         num_samples_seen = 0
+
+        print("Evaluating.")
+        eval_results = eval_model(
+            model=model,
+            vllm_instance=vllm_instance,
+            eval_sampling_params=SAMPLING_PARAMS,
+        )
+
+        rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
+        rewards = rewards.aggregate(['mean'])
+        for reward_name in rewards.columns:
+            run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=step_count)
+
+        # save eval results
+        eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")
+        with open(eval_results_output_path, "w") as fp:
+            for gen_output in eval_results:
+                fp.write(f"{gen_output.model_dump_json()}\n")
+        artifact = wandb.Artifact(name="eval_results", type="eval_results")
+        artifact.add_file(local_path=eval_results_output_path, name=f"{run.name}-epoch-{e-1:03d}")
+        run.log_artifact(artifact)
+
         for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
             step_count = e * len(dataloader) + idx
             input_ids = data['input_ids'].to(experiment_config.device_model)
@@ -169,27 +194,6 @@ def sft_loop(
                 optimizer.step()
                 # Zero gradients every `gradient_accumulation_steps` batches.
                 optimizer.zero_grad()
-
-        print("Evaluating.")
-        eval_results = eval_model(
-            model=model,
-            vllm_instance=vllm_instance,
-            eval_sampling_params=SAMPLING_PARAMS,
-        )
-
-        rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
-        rewards = rewards.aggregate(['mean'])
-        for reward_name in rewards.columns:
-            run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=step_count)
-
-        # save eval results
-        eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")
-        with open(eval_results_output_path, "w") as fp:
-            for gen_output in eval_results:
-                fp.write(f"{gen_output.model_dump_json()}\n")
-        artifact = wandb.Artifact(name="eval_results", type="eval_results")
-        artifact.add_file(local_path=eval_results_output_path, name=f"{run.name}-epoch-{e:03d}")
-        run.log_artifact(artifact)
 
         # save mode[l
         model_output_dir = os.path.join(experiment_config.output_dir, f"model")

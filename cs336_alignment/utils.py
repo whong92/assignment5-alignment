@@ -203,7 +203,7 @@ def sft_microbatch_train_step(
     return loss, {}
 
 
-class MathSFTDataset(Dataset):
+class MathSFTDatasetFromFile(Dataset):
     def __init__(self, path: str):
         self.data: list[dict[str, str]] = []
         with open(path, "r") as fp:
@@ -243,7 +243,7 @@ def debug_dataloader():
     import os
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Math-1.5B")
     dataset_path = f"{os.path.dirname(__file__)}/sft-train.jsonl"
-    dataset = MathSFTDataset(path=dataset_path)
+    dataset = MathSFTDatasetFromFile(path=dataset_path)
 
     dataloader = DataLoader(
         dataset=dataset,

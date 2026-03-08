@@ -146,6 +146,7 @@ def run_sft_epoch_train(
 ) -> int:
     sft_config = experiment_config.sft_config
     total_num_samples = len(dataloader.dataset)
+    num_samples_seen = 0
     for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
         step_count = epoch * len(dataloader) + idx
         input_ids = data['input_ids'].to(experiment_config.device_model)
@@ -167,7 +168,7 @@ def run_sft_epoch_train(
         run.log({"loss": loss.cpu().item()}, step=step_count)
 
         num_samples_seen += len(input_ids)
-        if ((idx + 1) % sft_config.gradient_accumulation_steps == 0) or (num_samples_seen == len(total_num_samples)):
+        if ((idx + 1) % sft_config.gradient_accumulation_steps == 0) or (num_samples_seen == total_num_samples):
             # Update weights every `gradient_accumulation_steps` batches.
             optimizer.step()
             # Zero gradients every `gradient_accumulation_steps` batches.

@@ -6,17 +6,27 @@ from cs336_alignment.utils import (
     EvalResult,
     get_math_benchmark_eval_inputs
 )
+from pydantic import BaseModel
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.eval_vllm import (
     evaluate_vllm,
     load_policy_into_vllm_instance,
 )
-from cs336_alignment.train import ExperimentRunConfig, model_setup, eval_model_and_save_results, run_sft_epoch_train, data_setup
+from cs336_alignment.train import model_setup, eval_model_and_save_results, run_sft_epoch_train, data_setup
+from cs336_alignment.train import ExperimentRunConfig as SFTExperimentRunConfig
 import pandas as pd
 import os
 import wandb
+import numpy as np
 
 prompt_template = read_text(prompts, "r1_zero.prompt")
+
+
+class ExpertIterationConfig(BaseModel):
+    num_ei_steps: int
+    num_rollouts: int
+    data_batch_size: int
+
 
 def expert_rollout(
     model: PreTrainedModel,
@@ -24,12 +34,21 @@ def expert_rollout(
     eval_sampling_params: SamplingParams,
     output_path: str,
     wandb_run: wandb.Run,
+    expert_iteration_config: ExpertIterationConfig,
     expert_iteration: int,
 ) -> None:
     eval_inputs = get_math_benchmark_eval_inputs(
         prompt_template=prompt_template,
         split="train",
     )
+
+    num_data_to_sample = min(expert_iteration_config.data_batch_size, len(eval_inputs))
+    selected_indices = np.random.choice(len(eval_inputs), num_data_to_sample, replace=False)
+    eval_inputs_selected = [
+        eval_inputs[i]
+        for _ in range(expert_iteration_config.num_rollouts)
+        for i in selected_indices
+    ]
 
     load_policy_into_vllm_instance(
         model,
@@ -38,11 +57,11 @@ def expert_rollout(
     eval_results = evaluate_vllm(
         vllm_model=vllm_instance,
         reward_fn=r1_zero_reward_fn,
-        eval_inputs=eval_inputs,
+        eval_inputs=eval_inputs_selected,
         eval_sampling_params=eval_sampling_params
     )
 
-    eval_inputs_df = pd.DataFrame.from_records([e.model_dump() for e in eval_inputs])
+    eval_inputs_df = pd.DataFrame.from_records([e.model_dump() for e in eval_inputs_selected])
     rewards_df = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
     generated_outputs_df = pd.DataFrame.from_records([r.generation_output.model_dump() for r in eval_results])
     combined_df = pd.concat([eval_inputs_df, rewards_df, generated_outputs_df], axis=1)
@@ -61,11 +80,15 @@ def expert_rollout(
     wandb_run.log_artifact(artifact)
 
 
+class ExperimentRunConfig(SFTExperimentRunConfig):
+    expert_iteration_config: ExpertIterationConfig
+
+
 def expert_iteration_sft(
     experiment_config: ExperimentRunConfig
 ):
 
-    dataloader = data_setup(experiment_config). # original dataloader, will need to add expert rollouts to this dataloader
+    dataloader = data_setup(experiment_config) # original dataloader, will need to add expert rollouts to this dataloader
     model, vllm_instance, optimizer, scheduler, run = model_setup(
         experiment_config,
         experiment_config.sft_config.epochs * len(dataloader) // experiment_config.sft_config.gradient_accumulation_steps

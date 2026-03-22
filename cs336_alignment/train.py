@@ -21,10 +21,10 @@ from cs336_alignment.utils import (
     get_math_benchmark_eval_inputs
 )
 from cs336_alignment.eval_vllm import (
-    init_vllm,
     evaluate_vllm,
-    load_policy_into_vllm_instance,
-    policy_to_vllm_model
+    policy_to_vllm_model,
+    init_vllm,
+    load_policy_into_vllm_instance
 )
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from pydantic import BaseModel, computed_field
@@ -116,23 +116,25 @@ class AdamWClipped(AdamW):
         super().step(closure)
 
 
-def eval_model(
+def eval_model_on_vllm(
     model: PreTrainedModel,
-    tokenizer: AutoTokenizer,
-    # vllm_instance: LLM,
+    # tokenizer: AutoTokenizer,
+    vllm_instance: LLM,
+    # vllm_device: str,
     eval_sampling_params: SamplingParams,
 ) -> list[EvalResult]:
     eval_inputs = get_math_benchmark_eval_inputs(
         prompt_template=prompt_template,
         split="test",
     )
+    load_policy_into_vllm_instance(
+        policy=model,
+        llm=vllm_instance
+    )
 
-    # load_policy_into_vllm_instance(
-    #     model,
-    #     vllm_instance
+    # vllm_instance = policy_to_vllm_model(
+    #     model, tokenizer, vllm_device=vllm_device, seed=42
     # )
-
-    vllm_instance = policy_to_vllm_model(model, tokenizer, device="cuda:1", seed=42)
 
     res = evaluate_vllm(
         vllm_model=vllm_instance,
@@ -140,11 +142,6 @@ def eval_model(
         eval_inputs=eval_inputs,
         eval_sampling_params=eval_sampling_params
     )
-
-    destroy_model_parallel()
-    del vllm_instance.llm_engine.model_executor
-    gc.collect()
-    torch.cuda.empty_cache()
 
     return res
 
@@ -236,11 +233,11 @@ def model_setup(
         attn_implementation="flash_attention_2",
     ).to(experiment_config.device_model)
 
-    # vllm_instance = init_vllm(
-    #     model_path,
-    #     device=experiment_config.device_vllm,
-    #     seed=sft_config.seed,
-    # )
+    vllm_instance = init_vllm(
+        model_path,
+        device=experiment_config.device_vllm,
+        seed=sft_config.seed,
+    )
 
     optimizer = AdamWClipped(
         model.parameters(),
@@ -257,22 +254,24 @@ def model_setup(
         eta_min=sft_config.lr * 0.1,
     )
 
-    # return model, vllm_instance, optimizer, scheduler, run
-    return model, optimizer, scheduler, run
+    return model, vllm_instance, optimizer, scheduler, run
+    # return model, optimizer, scheduler, run
+
 
 def eval_model_and_save_results(
     model: PreTrainedModel,
-    tokenizer: AutoTokenizer,
-    # vllm_instance: LLM,
+    # tokenizer: AutoTokenizer,
+    vllm_instance: LLM,
     run: wandb.Run,
     experiment_config: ExperimentRunConfig,
     epoch: int,
     steps_per_epoch: int
 ) -> None:
-    eval_results = eval_model(
+    eval_results = eval_model_on_vllm(
         model=model,
-        tokenizer=tokenizer,
-        # vllm_instance=vllm_instance,
+        vllm_instance=vllm_instance,
+        # tokenizer=tokenizer,
+        # vllm_device=experiment_config.device_vllm,
         eval_sampling_params=SAMPLING_PARAMS,
     )
     rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
@@ -294,60 +293,9 @@ def sft_loop(
     experiment_config: ExperimentRunConfig
 ):
     print("Initializing.")
-    
-    # sft_config = experiment_config.sft_config
-    # if not os.path.exists(experiment_config.output_dir):
-    #     os.makedirs(experiment_config.output_dir, exist_ok=True)
 
-    # # Start a new wandb run to track this script.
-    # run = wandb.init(
-    #     # Set the wandb entity where your project will be logged (generally your team name).
-    #     entity="wai-ong11",
-    #     # Set the wandb project where this run will be logged.
-    #     project = WANDB_PROJECT,
-    #     # Track hyperparameters and run metadata.
-    #     config=experiment_config.model_dump(mode="json"),
-    # )
-
-    # model = AutoModelForCausalLM.from_pretrained(
-    #     MODEL_NAME,
-    #     torch_dtype=torch.bfloat16,
-    #     attn_implementation="flash_attention_2",
-    # ).to(experiment_config.device_model)
-
-    # tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-    # vllm_instance = init_vllm(
-    #     MODEL_NAME,
-    #     device=experiment_config.device_vllm,
-    #     seed=sft_config.seed,
-    # )
-
-    # dataset = MathSFTDatasetFromFile(path=experiment_config.dataset_path)
-
-    # dataloader = DataLoader(
-    #     dataset=dataset,
-    #     batch_size=sft_config.batch_size,
-    #     shuffle=True,
-    #     collate_fn=make_math_sft_collate_fn(tokenizer=tokenizer, max_seq_token_len=experiment_config.max_seq_tok_len),
-    # )
-
-    # optimizer = AdamWClipped(
-    #     model.parameters(),
-    #     lr=sft_config.lr,
-    #     weight_decay=0.0,
-    #     betas=(0.9, 0.95),
-    #     max_grad_norm=1.0,
-    # )
-
-    # num_steps = sft_config.epochs * len(dataloader) // sft_config.gradient_accumulation_steps
-    # scheduler = CosineAnnealingLR(
-    #     optimizer, 
-    #     T_max=num_steps,
-    #     eta_min=sft_config.lr * 0.1,
-    # )
     dataloader, tokenizer = data_setup(experiment_config)
-    model, optimizer, scheduler, run = model_setup(
+    model, vllm_instance, optimizer, scheduler, run = model_setup(
         experiment_config,
         experiment_config.sft_config.epochs * len(dataloader) // experiment_config.sft_config.gradient_accumulation_steps
     )
@@ -355,29 +303,11 @@ def sft_loop(
     print("Start Training Loop.")
     for e in range(experiment_config.sft_config.epochs):
         print("Evaluating.")
-        # eval_results = eval_model(
-        #     model=model,
-        #     vllm_instance=vllm_instance,
-        #     eval_sampling_params=SAMPLING_PARAMS,
-        # )
-        # rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
-        # rewards = rewards.aggregate(['mean'])
-        # for reward_name in rewards.columns:
-        #     run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=e * len(dataloader))
-
-        # # save eval results
-        # eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")
-        # with open(eval_results_output_path, "w") as fp:
-        #     for gen_output in eval_results:
-        #         fp.write(f"{gen_output.model_dump_json()}\n")
-        # artifact = wandb.Artifact(name="eval_results", type="eval_results")
-        # artifact.add_file(local_path=eval_results_output_path, name=f"{run.name}-epoch-{e-1:03d}")
-        # run.log_artifact(artifact)
 
         eval_model_and_save_results(
             model=model,
-            tokenizer=tokenizer,
-            # vllm_instance=vllm_instance,
+            # tokenizer=tokenizer,
+            vllm_instance=vllm_instance,
             run=run,
             experiment_config=experiment_config,
             epoch=e,
@@ -394,34 +324,6 @@ def sft_loop(
             epoch=e,
         )
 
-        # for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
-        #     step_count = e * len(dataloader) + idx
-        #     input_ids = data['input_ids'].to(experiment_config.device_model)
-        #     labels = data['labels'].to(experiment_config.device_model)
-        #     response_mask = data['response_mask'].to(experiment_config.device_model)
-        #     # Forward pass.
-        #     ret = get_response_log_probs(
-        #         model,
-        #         input_ids=input_ids,
-        #         labels=labels,
-        #     )
-        #     log_probs = ret['log_probs']
-
-        #     loss, _ = sft_microbatch_train_step(
-        #         policy_log_probs=log_probs,
-        #         response_mask=response_mask,
-        #         gradient_accumulation_steps=sft_config.gradient_accumulation_steps,
-        #     )
-        #     run.log({"loss": loss.cpu().item()}, step=step_count)
-
-        #     num_samples_seen += len(input_ids)
-        #     if ((idx + 1) % sft_config.gradient_accumulation_steps == 0) or (num_samples_seen == len(dataset)):
-        #         # Update weights every `gradient_accumulation_steps` batches.
-        #         optimizer.step()
-        #         # Zero gradients every `gradient_accumulation_steps` batches.
-        #         optimizer.zero_grad()
-        #         scheduler.step()
-
         # save mode[l
         model_output_dir = os.path.join(experiment_config.output_dir, f"model")
         os.makedirs(model_output_dir, exist_ok=True)
@@ -431,8 +333,6 @@ def sft_loop(
         run.log_artifact(artifact)
 
 
-# TODO: last run (dutiful-totem-16) produced bery bad generations  - need to debug (loss is decreasing but the generations are gibberish).
-# are we loading up the weights in to the vllm correctly?
 def main():
     with open("/workspace/assignment5-alignment/cs336_alignment/basic_config.yaml", "r") as fp:
         config_dict = yaml.safe_load(fp)

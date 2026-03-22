@@ -13,7 +13,7 @@ from cs336_alignment.utils import (
     R1_ZERO_PROMPT_TEMPLATE,
 )
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
-
+import tempfile
 
 
 def generate_outputs_for_eval(
@@ -120,14 +120,19 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     print("Loading policy weights into vLLM model...")
     state_dict = policy.state_dict()
     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    llm_model.load_weights(state_dict.items())
+    state_dict_cpu = {k: v.cpu() for k, v in state_dict.items()}
+    llm_model.load_weights(state_dict_cpu.items())
 
 
-import tempfile
-
-def policy_to_vllm_model(policy: PreTrainedModel, tokenizer: PreTrainedTokenizer, device: str, seed: int) -> LLM:
+def policy_to_vllm_model(
+    policy: PreTrainedModel, 
+    tokenizer: PreTrainedTokenizer, 
+    vllm_device: str, 
+    seed: int
+) -> LLM:
+    # Transfer policy weights -> vllm by saving it to file first
     with tempfile.TemporaryDirectory() as tmp_dir:
         policy.save_pretrained(tmp_dir)
         tokenizer.save_pretrained(tmp_dir)
-        llm = init_vllm(model_id=tmp_dir, device=device, seed=seed)
+        llm = init_vllm(model_id=tmp_dir, device=vllm_device, seed=seed)
     return llm

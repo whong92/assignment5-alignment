@@ -1,3 +1,4 @@
+import gc
 import os
 
 os.environ["WANDB_API_KEY"] = "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"
@@ -23,6 +24,7 @@ from cs336_alignment.eval_vllm import (
     init_vllm,
     evaluate_vllm,
     load_policy_into_vllm_instance,
+    policy_to_vllm_model
 )
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from pydantic import BaseModel, computed_field
@@ -30,6 +32,7 @@ from vllm import LLM, SamplingParams
 import pandas as pd
 import yaml
 from tqdm import tqdm
+from vllm.distributed.parallel_state import destroy_model_parallel
 
 import wandb
 
@@ -115,7 +118,8 @@ class AdamWClipped(AdamW):
 
 def eval_model(
     model: PreTrainedModel,
-    vllm_instance: LLM,
+    tokenizer: AutoTokenizer,
+    # vllm_instance: LLM,
     eval_sampling_params: SamplingParams,
 ) -> list[EvalResult]:
     eval_inputs = get_math_benchmark_eval_inputs(
@@ -123,16 +127,26 @@ def eval_model(
         split="test",
     )
 
-    load_policy_into_vllm_instance(
-        model,
-        vllm_instance
-    )
-    return evaluate_vllm(
+    # load_policy_into_vllm_instance(
+    #     model,
+    #     vllm_instance
+    # )
+
+    vllm_instance = policy_to_vllm_model(model, tokenizer, device="cuda:1", seed=42)
+
+    res = evaluate_vllm(
         vllm_model=vllm_instance,
         reward_fn=r1_zero_reward_fn,
         eval_inputs=eval_inputs,
         eval_sampling_params=eval_sampling_params
     )
+
+    destroy_model_parallel()
+    del vllm_instance.llm_engine.model_executor
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return res
 
 
 def run_sft_epoch_train(
@@ -189,7 +203,7 @@ def data_setup(experiment_config: ExperimentRunConfig) -> DataLoader:
             max_seq_token_len=experiment_config.max_seq_tok_len
         ),
     )
-    return dataloader
+    return dataloader, tokenizer
 
 
 def model_setup(
@@ -197,7 +211,6 @@ def model_setup(
     tot_num_optimizer_steps: int
 ) -> tuple[
     PreTrainedModel, 
-    LLM, 
     AdamWClipped, 
     CosineAnnealingLR, 
     wandb.Run
@@ -223,11 +236,11 @@ def model_setup(
         attn_implementation="flash_attention_2",
     ).to(experiment_config.device_model)
 
-    vllm_instance = init_vllm(
-        model_path,
-        device=experiment_config.device_vllm,
-        seed=sft_config.seed,
-    )
+    # vllm_instance = init_vllm(
+    #     model_path,
+    #     device=experiment_config.device_vllm,
+    #     seed=sft_config.seed,
+    # )
 
     optimizer = AdamWClipped(
         model.parameters(),
@@ -244,12 +257,13 @@ def model_setup(
         eta_min=sft_config.lr * 0.1,
     )
 
-    return model, vllm_instance, optimizer, scheduler, run
-
+    # return model, vllm_instance, optimizer, scheduler, run
+    return model, optimizer, scheduler, run
 
 def eval_model_and_save_results(
     model: PreTrainedModel,
-    vllm_instance: LLM,
+    tokenizer: AutoTokenizer,
+    # vllm_instance: LLM,
     run: wandb.Run,
     experiment_config: ExperimentRunConfig,
     epoch: int,
@@ -257,7 +271,8 @@ def eval_model_and_save_results(
 ) -> None:
     eval_results = eval_model(
         model=model,
-        vllm_instance=vllm_instance,
+        tokenizer=tokenizer,
+        # vllm_instance=vllm_instance,
         eval_sampling_params=SAMPLING_PARAMS,
     )
     rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
@@ -331,8 +346,8 @@ def sft_loop(
     #     T_max=num_steps,
     #     eta_min=sft_config.lr * 0.1,
     # )
-    dataloader = data_setup(experiment_config)
-    model, vllm_instance, optimizer, scheduler, run = model_setup(
+    dataloader, tokenizer = data_setup(experiment_config)
+    model, optimizer, scheduler, run = model_setup(
         experiment_config,
         experiment_config.sft_config.epochs * len(dataloader) // experiment_config.sft_config.gradient_accumulation_steps
     )
@@ -361,7 +376,8 @@ def sft_loop(
 
         eval_model_and_save_results(
             model=model,
-            vllm_instance=vllm_instance,
+            tokenizer=tokenizer,
+            # vllm_instance=vllm_instance,
             run=run,
             experiment_config=experiment_config,
             epoch=e,

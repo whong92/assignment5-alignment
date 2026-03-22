@@ -1,6 +1,6 @@
 from typing import Callable
 from vllm import LLM, SamplingParams
-from transformers import PreTrainedModel
+from transformers import AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 import torch
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
 from unittest.mock import patch
@@ -116,6 +116,18 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     Copied from https://github.com/huggingface/trl/blob/
     22759c820867c8659d00082ba8cf004e963873c1/trl/trainer/grpo_trainer.py#L670.
     """
+    print("=" * 100)
+    print("Loading policy weights into vLLM model...")
     state_dict = policy.state_dict()
     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
     llm_model.load_weights(state_dict.items())
+
+
+import tempfile
+
+def policy_to_vllm_model(policy: PreTrainedModel, tokenizer: PreTrainedTokenizer, device: str, seed: int) -> LLM:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        policy.save_pretrained(tmp_dir)
+        tokenizer.save_pretrained(tmp_dir)
+        llm = init_vllm(model_id=tmp_dir, device=device, seed=seed)
+    return llm

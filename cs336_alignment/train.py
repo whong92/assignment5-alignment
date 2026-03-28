@@ -153,13 +153,13 @@ def run_sft_epoch_train(
     scheduler: CosineAnnealingLR,
     run: wandb.Run,
     experiment_config: ExperimentRunConfig,
-    epoch: int
+    num_train_steps_so_far: int
 ) -> int:
     sft_config = experiment_config.sft_config
     total_num_samples = len(dataloader.dataset)
     num_samples_seen = 0
+    tot_num_steps = num_train_steps_so_far
     for idx, data in tqdm(enumerate(dataloader), total=len(dataloader)):
-        step_count = epoch * len(dataloader) + idx
         input_ids = data['input_ids'].to(experiment_config.device_model)
         labels = data['labels'].to(experiment_config.device_model)
         response_mask = data['response_mask'].to(experiment_config.device_model)
@@ -176,7 +176,8 @@ def run_sft_epoch_train(
             response_mask=response_mask,
             gradient_accumulation_steps=sft_config.gradient_accumulation_steps,
         )
-        run.log({"loss": loss.cpu().item()}, step=step_count)
+        run.log({"loss": loss.cpu().item()}, step=tot_num_steps)
+        tot_num_steps += 1
 
         num_samples_seen += len(input_ids)
         if ((idx + 1) % sft_config.gradient_accumulation_steps == 0) or (num_samples_seen == total_num_samples):
@@ -185,22 +186,30 @@ def run_sft_epoch_train(
             # Zero gradients every `gradient_accumulation_steps` batches.
             optimizer.zero_grad()
             scheduler.step()
+    return tot_num_steps
 
 
-def data_setup(experiment_config: ExperimentRunConfig) -> DataLoader:
-    dataset = MathSFTDatasetFromFile(path=experiment_config.dataset_path)
-    sft_config = experiment_config.sft_config
+def data_setup_from_config(experiment_config: ExperimentRunConfig) -> DataLoader:
+    return data_setup(
+        dataset_path=experiment_config.dataset_path,
+        batch_size=experiment_config.sft_config.batch_size,
+        max_seq_token_len=experiment_config.max_seq_tok_len,
+    )
+
+
+def data_setup(dataset_path: str, batch_size: int, max_seq_token_len: int) -> DataLoader:
+    dataset = MathSFTDatasetFromFile(path=dataset_path)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     dataloader = DataLoader(
         dataset=dataset,
-        batch_size=sft_config.batch_size,
+        batch_size=batch_size,
         shuffle=True,
         collate_fn=make_math_sft_collate_fn(
             tokenizer=tokenizer, 
-            max_seq_token_len=experiment_config.max_seq_tok_len
+            max_seq_token_len=max_seq_token_len
         ),
     )
-    return dataloader, tokenizer
+    return dataloader
 
 
 def model_setup(
@@ -265,7 +274,6 @@ def eval_model_and_save_results(
     run: wandb.Run,
     experiment_config: ExperimentRunConfig,
     epoch: int,
-    steps_per_epoch: int
 ) -> None:
     eval_results = eval_model_on_vllm(
         model=model,
@@ -277,7 +285,7 @@ def eval_model_and_save_results(
     rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
     rewards = rewards.aggregate(['mean'])
     for reward_name in rewards.columns:
-        run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=epoch * steps_per_epoch)
+        run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=epoch)
 
     # save eval results
     eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")
@@ -294,11 +302,12 @@ def sft_loop(
 ):
     print("Initializing.")
 
-    dataloader, tokenizer = data_setup(experiment_config)
+    dataloader = data_setup_from_config(experiment_config)
     model, vllm_instance, optimizer, scheduler, run = model_setup(
         experiment_config,
         experiment_config.sft_config.epochs * len(dataloader) // experiment_config.sft_config.gradient_accumulation_steps
     )
+    tot_num_steps = 0
 
     print("Start Training Loop.")
     for e in range(experiment_config.sft_config.epochs):
@@ -311,17 +320,16 @@ def sft_loop(
             run=run,
             experiment_config=experiment_config,
             epoch=e,
-            steps_per_epoch=len(dataloader),
         )
 
-        run_sft_epoch_train(
+        tot_num_steps = run_sft_epoch_train(
             model=model,
             dataloader=dataloader,
             optimizer=optimizer,
             scheduler=scheduler,
             run=run,
             experiment_config=experiment_config,
-            epoch=e,
+            num_train_steps_so_far=tot_num_steps,
         )
 
         # save mode[l

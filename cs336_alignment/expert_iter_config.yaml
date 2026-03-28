@@ -1,0 +1,16 @@
+sft_config:
+  lr: 5e-5
+  batch_size: 4
+  gradient_accumulation_steps: 32
+  seed: 42
+  epochs: 5
+expert_iteration_config:
+  num_rollouts: 10
+  data_batch_size: 512
+  num_ei_steps: 5
+base_path: "/workspace"
+dataset_path_rel: "assignment5-alignment/cs336_alignment/sft-train.jsonl"
+output_dir_rel: "output/"
+device_model: "cuda:0"
+device_vllm: "cuda:1"
+max_seq_tok_len: 1025

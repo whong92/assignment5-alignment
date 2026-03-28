@@ -13,6 +13,7 @@ from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.eval_vllm import (
     evaluate_vllm,
     load_policy_into_vllm_instance,
+    init_vllm
 )
 from cs336_alignment.train import model_setup, eval_model_and_save_results, run_sft_epoch_train, data_setup_from_config, data_setup
 from cs336_alignment.train import ExperimentRunConfig as SFTExperimentRunConfig
@@ -20,7 +21,8 @@ import pandas as pd
 import os
 import wandb
 import numpy as np
-from cs336_alignment.train import SAMPLING_PARAMS
+import torch
+from cs336_alignment.train import SAMPLING_PARAMS, AdamWClipped, CosineAnnealingLR, WANDB_PROJECT, MODEL_NAME, init_vllm
 
 prompt_template = read_text(prompts, "r1_zero.prompt")
 
@@ -92,11 +94,33 @@ def expert_iteration_sft(
 ):
 
     dataloader = data_setup_from_config(experiment_config) # original dataloader, will need to add expert rollouts to this dataloader
-    model, vllm_instance, optimizer, scheduler, run = model_setup(
-        experiment_config,
-        experiment_config.sft_config.epochs * len(dataloader) // experiment_config.sft_config.gradient_accumulation_steps
+
+    if not os.path.exists(experiment_config.output_dir):
+        os.makedirs(experiment_config.output_dir, exist_ok=True)
+
+    # Start a new wandb run to track this script.
+    run = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity="wai-ong11",
+        # Set the wandb project where this run will be logged.
+        project = WANDB_PROJECT,
+        # Track hyperparameters and run metadata.
+        config=experiment_config.model_dump(mode="json"),
     )
-    tot_num_steps = 0
+
+    model_path = experiment_config.model_ckpt_path if experiment_config.model_ckpt_path is not None else MODEL_NAME
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
+    ).to(experiment_config.device_model)
+
+    vllm_instance = init_vllm(
+        model_path,
+        device=experiment_config.device_vllm,
+        seed=experiment_config.sft_config.seed,
+    )
+
 
     print("Start Training Loop.")
     for ei_step in range(experiment_config.expert_iteration_config.num_ei_steps):
@@ -117,6 +141,23 @@ def expert_iteration_sft(
             batch_size=experiment_config.sft_config.batch_size,
             max_seq_token_len=experiment_config.max_seq_tok_len,
         )
+
+        # re-initialize the optimizer and scheduler at each iteration since we are sft-ing from start each time
+        optimizer = AdamWClipped(
+            model.parameters(),
+            lr=experiment_config.sft_config.lr,
+            weight_decay=0.0,
+            betas=(0.9, 0.95),
+            max_grad_norm=1.0,
+        )
+
+        num_steps = experiment_config.sft_config.epochs * len(dataloader) // experiment_config.sft_config.gradient_accumulation_steps
+        scheduler = CosineAnnealingLR(
+            optimizer, 
+            T_max=num_steps,
+            eta_min=experiment_config.sft_config.lr * 0.1,
+        )
+
 
         for inner_epoch in range(experiment_config.sft_config.epochs):
             epoch = ei_step * experiment_config.sft_config.epochs + inner_epoch

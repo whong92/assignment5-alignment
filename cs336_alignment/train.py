@@ -269,23 +269,21 @@ def model_setup(
 
 def eval_model_and_save_results(
     model: PreTrainedModel,
-    # tokenizer: AutoTokenizer,
     vllm_instance: LLM,
     run: wandb.Run,
     experiment_config: ExperimentRunConfig,
     epoch: int,
+    step: int,
 ) -> None:
     eval_results = eval_model_on_vllm(
         model=model,
         vllm_instance=vllm_instance,
-        # tokenizer=tokenizer,
-        # vllm_device=experiment_config.device_vllm,
         eval_sampling_params=SAMPLING_PARAMS,
     )
     rewards = pd.DataFrame.from_records([r.reward_fn_output for r in eval_results])
     rewards = rewards.aggregate(['mean'])
     for reward_name in rewards.columns:
-        run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=epoch)
+        run.log({reward_name: rewards.loc['mean', reward_name].item()}, step=step)
 
     # save eval results
     eval_results_output_path = os.path.join(experiment_config.output_dir, f"eval_results.jsonl")

@@ -127,6 +127,7 @@ def expert_iteration_sft(
                 run=run,
                 experiment_config=experiment_config,
                 epoch=epoch,
+                step=tot_num_steps,
             )
 
             tot_num_steps = run_sft_epoch_train(

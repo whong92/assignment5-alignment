@@ -121,7 +121,7 @@ def expert_iteration_sft(
         seed=experiment_config.sft_config.seed,
     )
 
-
+    tot_num_steps = 0
     print("Start Training Loop.")
     for ei_step in range(experiment_config.expert_iteration_config.num_ei_steps):
         print("Performing expert rollout.")

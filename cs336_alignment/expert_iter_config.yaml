@@ -3,7 +3,7 @@ sft_config:
   batch_size: 4
   gradient_accumulation_steps: 32
   seed: 42
-  epochs: 10
+  epochs: 20
 expert_iteration_config:
   num_rollouts: 10
   data_batch_size: 1024
